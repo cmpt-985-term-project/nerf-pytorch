@@ -535,8 +535,6 @@ def config_parser():
                         help='frequency of testset saving')
     parser.add_argument("--i_video",   type=int, default=50000, 
                         help='frequency of render_poses video saving')
-    parser.add_argument("--perf_profiling", action='store_true',
-                        help='enable NVTX performance profiling')
 
     return parser
 
@@ -545,9 +543,6 @@ def train():
 
     parser = config_parser()
     args = parser.parse_args()
-
-    # Optional performance profiler
-    profiler = nvtx.annotate if args.perf_profiling else contextlib.nullcontext
 
     # Load data
     K = None
@@ -722,7 +717,7 @@ def train():
     
     start = start + 1
     for i in trange(start, N_iters):
-        with profiler(f'Training iteration {i}'):
+        with nvtx.annotate(f'Training iteration {i}'):
             time0 = time.time()
 
             # Sample random ray batch
@@ -776,20 +771,21 @@ def train():
                                                     **render_kwargs_train)
 
             optimizer.zero_grad()
-            img_loss = img2mse(rgb, target_s)
-            trans = extras['raw'][...,-1]
-            loss = img_loss
-            psnr = mse2psnr(img_loss)
+            with nvtx.annotate("compute loss"):
+                img_loss = img2mse(rgb, target_s)
+                trans = extras['raw'][...,-1]
+                loss = img_loss
+                psnr = mse2psnr(img_loss)
 
-            if 'rgb0' in extras:
-                img_loss0 = img2mse(extras['rgb0'], target_s)
-                loss = loss + img_loss0
-                psnr0 = mse2psnr(img_loss0)
+                if 'rgb0' in extras:
+                    img_loss0 = img2mse(extras['rgb0'], target_s)
+                    loss = loss + img_loss0
+                    psnr0 = mse2psnr(img_loss0)
 
-            with profiler("back propagation"):
+            with nvtx.annotate("back propagation"):
                 loss.backward()
     
-            with profiler("optimizer step"):
+            with nvtx.annotate("optimizer step"):
                 optimizer.step()
 
             # NOTE: IMPORTANT!
