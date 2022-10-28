@@ -1,11 +1,8 @@
-import os, sys
+import os
 import numpy as np
 import imageio
-import json
-import random
 import time
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm, trange
 
@@ -18,9 +15,11 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
-# For performance profiling
+# Performance profiling
 import nvtx
-import contextlib
+
+# Experiment tracking
+from clearml import Dataset, Logger
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
@@ -501,6 +500,10 @@ def config_parser():
                         help='options: llff / blender / deepvoxels')
     parser.add_argument("--testskip", type=int, default=8, 
                         help='will load 1/N images from test/val sets, useful for large datasets like deepvoxels')
+    parser.add_argument("--dataset_project", type=str, default='Term Project',
+                        help='ClearML project where dataset is to be found')
+    parser.add_argument("--dataset_name", type=str, default='fern',
+                        help='name of ClearML dataset')
 
     ## deepvoxels flags
     parser.add_argument("--shape", type=str, default='greek', 
@@ -535,6 +538,8 @@ def config_parser():
                         help='frequency of testset saving')
     parser.add_argument("--i_video",   type=int, default=50000, 
                         help='frequency of render_poses video saving')
+    parser.add_argument('--use_clearml', action='store_true',
+                        help='use ClearML for experiment tracking')
 
     return parser
 
@@ -546,13 +551,18 @@ def train():
 
     # Load data
     K = None
+    if args.use_clearml:
+        datadir = Dataset.get(dataset_name=args.dataset_name, dataset_project=args.dataset_project).get_local_copy()
+    else:
+        datadir = args.datadir
+
     if args.dataset_type == 'llff':
-        images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
+        images, poses, bds, render_poses, i_test = load_llff_data(datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
         hwf = poses[0,:3,-1]
         poses = poses[:,:3,:4]
-        print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
+        print('Loaded llff', images.shape, render_poses.shape, hwf, datadir)
         if not isinstance(i_test, list):
             i_test = [i_test]
 
@@ -575,8 +585,8 @@ def train():
         print('NEAR FAR', near, far)
 
     elif args.dataset_type == 'blender':
-        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
-        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        images, poses, render_poses, hwf, i_split = load_blender_data(datadir, args.half_res, args.testskip)
+        print('Loaded blender', images.shape, render_poses.shape, hwf, datadir)
         i_train, i_val, i_test = i_split
 
         near = 2.
@@ -588,7 +598,7 @@ def train():
             images = images[...,:3]
 
     elif args.dataset_type == 'LINEMOD':
-        images, poses, render_poses, hwf, K, i_split, near, far = load_LINEMOD_data(args.datadir, args.half_res, args.testskip)
+        images, poses, render_poses, hwf, K, i_split, near, far = load_LINEMOD_data(datadir, args.half_res, args.testskip)
         print(f'Loaded LINEMOD, images shape: {images.shape}, hwf: {hwf}, K: {K}')
         print(f'[CHECK HERE] near: {near}, far: {far}.')
         i_train, i_val, i_test = i_split
@@ -601,10 +611,10 @@ def train():
     elif args.dataset_type == 'deepvoxels':
 
         images, poses, render_poses, hwf, i_split = load_dv_data(scene=args.shape,
-                                                                 basedir=args.datadir,
+                                                                 basedir=datadir,
                                                                  testskip=args.testskip)
 
-        print('Loaded deepvoxels', images.shape, render_poses.shape, hwf, args.datadir)
+        print('Loaded deepvoxels', images.shape, render_poses.shape, hwf, datadir)
         i_train, i_val, i_test = i_split
 
         hemi_R = np.mean(np.linalg.norm(poses[:,:3,-1], axis=-1))
