@@ -1,9 +1,16 @@
+#
+# Fully Fused MLP NeRF
+#  
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import tinycudann as tcnn
+import json
+
 # Small NeRF for Hash embeddings
-class NeRFSmall(nn.Module):
+# TODO: figure out the output dimensions, and how to deal with view angle
+class FusedNeRF(nn.Module):
     def __init__(self,
                  num_layers=3,
                  hidden_dim=64,
@@ -12,7 +19,17 @@ class NeRFSmall(nn.Module):
                  hidden_dim_color=64,
                  input_ch=3, input_ch_views=3,
                  ):
-        super(NeRFSmall, self).__init__()
+        super(FusedNeRF, self).__init__()
+
+        network_config = json.loads(f'''
+            "otype": "FullyFusedMLP",
+            "activation": "ReLU",
+            "output_activation": "None",
+            "n_neurons": {hidden_dim},
+            "n_hidden_layers": 2
+        ''')
+        self.network = tcnn.Network(n_input_dims=input_ch, n_output_dims=3, network_config=network_config)
+
 
         self.input_ch = input_ch
         self.input_ch_views = input_ch_views
