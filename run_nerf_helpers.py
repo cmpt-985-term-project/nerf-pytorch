@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+import nvtx
 
 # Misc
 img2mse = lambda x, y : torch.mean((x - y) ** 2)
@@ -41,6 +42,7 @@ class Embedder:
         self.embed_fns = embed_fns
         self.out_dim = out_dim
         
+    @nvtx.annotate("Input embedding")
     def embed(self, inputs):
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
 
@@ -93,6 +95,7 @@ class NeRF(nn.Module):
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
+    @nvtx.annotate("NeRF forward")
     def forward(self, x):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
@@ -150,6 +153,7 @@ class NeRF(nn.Module):
 
 
 # Ray helpers
+@nvtx.annotate("get_rays")
 def get_rays(H, W, K, c2w):
     i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
     i = i.t()
