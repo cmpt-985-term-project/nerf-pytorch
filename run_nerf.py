@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from tqdm import tqdm, trange
 
 import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
 
 from run_nerf_helpers import *
 
@@ -388,6 +389,7 @@ def render_rays(ray_batch,
 #     raw = run_network(pts)
     with nvtx.annotate("Query coarse network"):
         raw = network_query_fn(pts, viewdirs, network_fn)
+
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
     if N_importance > 0:
@@ -723,7 +725,7 @@ def train():
     print('VAL views are', i_val)
 
     # Summary writers
-    # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
+    writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     
     start = start + 1
     for i in trange(start, N_iters):
@@ -808,11 +810,9 @@ def train():
             ################################
 
             dt = time.time()-time0
-            # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
-            #####           end            #####
 
             # Rest is logging
-            if i%args.i_weights==0:
+            if i%args.i_weights==0 and i > 0:
                 path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
                 torch.save({
                     'global_step': global_step,
@@ -846,22 +846,18 @@ def train():
                     render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
                 print('Saved test set')
 
-
-        
             if i%args.i_print==0:
                 tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
-            """
-                print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
+                print(expname, i, psnr.item(), loss.item(), global_step)
                 print('iter time {:.05f}'.format(dt))
 
-                with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_print):
-                    tf.contrib.summary.scalar('loss', loss)
-                    tf.contrib.summary.scalar('psnr', psnr)
-                    tf.contrib.summary.histogram('tran', trans)
-                    if args.N_importance > 0:
-                        tf.contrib.summary.scalar('psnr0', psnr0)
+                writer.add_scalar('train/loss', loss.item(), i)
+                writer.add_scalar('train/psnr', psnr.item(), i)
+                # writer.add_histogram('train/tran', trans.item(), i)
+                if args.N_importance > 0:
+                    writer.add_scalar('train/psnr0', psnr0.item(), i)
 
-
+                '''
                 if i%args.i_img==0:
 
                     # Log a rendered validation view to Tensorboard
@@ -874,14 +870,14 @@ def train():
 
                     psnr = mse2psnr(img2mse(rgb, target))
 
-                    with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
+                    import pdb; pdb.set_trace()
 
-                        tf.contrib.summary.image('rgb', to8b(rgb)[tf.newaxis])
-                        tf.contrib.summary.image('disp', disp[tf.newaxis,...,tf.newaxis])
-                        tf.contrib.summary.image('acc', acc[tf.newaxis,...,tf.newaxis])
+                    writer.add_image('rgb', to8b(rgb)[tf.newaxis])
+                    tf.contrib.summary.image('disp', disp[tf.newaxis,...,tf.newaxis])
+                    tf.contrib.summary.image('acc', acc[tf.newaxis,...,tf.newaxis])
 
-                        tf.contrib.summary.scalar('psnr_holdout', psnr)
-                        tf.contrib.summary.image('rgb_holdout', target[tf.newaxis])
+                    writer.add_scalar('psnr_holdout', psnr.item(), i)
+                    tf.contrib.summary.image('rgb_holdout', target[tf.newaxis])
 
 
                     if args.N_importance > 0:
@@ -890,8 +886,7 @@ def train():
                             tf.contrib.summary.image('rgb0', to8b(extras['rgb0'])[tf.newaxis])
                             tf.contrib.summary.image('disp0', extras['disp0'][tf.newaxis,...,tf.newaxis])
                             tf.contrib.summary.image('z_std', extras['z_std'][tf.newaxis,...,tf.newaxis])
-            """
-
+                '''
             global_step += 1
 
 
