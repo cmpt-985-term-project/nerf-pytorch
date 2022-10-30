@@ -2,6 +2,7 @@
 # Positional Encoder from NeRF paper
 #
 import torch
+import nvtx
 
 # Positional encoding (section 5.1)
 class PositionalEncoder:
@@ -33,5 +34,6 @@ class PositionalEncoder:
         self.embed_fns = embed_fns
         self.out_dim = out_dim
         
+    @nvtx.annotate("Positional encoding")
     def embed(self, inputs):
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
