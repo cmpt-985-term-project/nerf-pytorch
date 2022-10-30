@@ -1,3 +1,3 @@
-from nerf import NeRF
-from models.small_nerf import SmallNeRF
+from .nerf import NeRF
+from .small_nerf import SmallNeRF
 

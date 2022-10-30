@@ -431,6 +431,10 @@ def config_parser():
     parser.add_argument("--datadir", type=str, default='./data/llff/fern', 
                         help='input data directory')
 
+    # performance engineering
+    parser.add_argument("--encoder", type=str, default='positional',
+                        help='type of input encoder to use')
+
     # training options
     parser.add_argument("--N_iters", type=int, default=200000,
                         help='number of training iterations')
@@ -844,11 +848,11 @@ def train():
                 print(expname, i, psnr.item(), loss.item(), global_step)
                 print('iter time {:.05f}'.format(dt))
 
-                writer.add_scalar('train/loss', loss.item(), i)
-                writer.add_scalar('train/psnr', psnr.item(), i)
+                writer.add_scalar('loss', loss.item(), i)
+                writer.add_scalar('psnr/coarse train', psnr.item(), i)
                 # writer.add_histogram('train/tran', trans.item(), i)
                 if args.N_importance > 0:
-                    writer.add_scalar('train/psnr0', psnr0.item(), i)
+                    writer.add_scalar('psnr/fine train', psnr0.item(), i)
 
                 '''
                 if i%args.i_img==0:
