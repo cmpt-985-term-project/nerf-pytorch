@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import numpy as np
+import nvtx
 
 # Model
 class NeRF(nn.Module):
@@ -30,6 +31,7 @@ class NeRF(nn.Module):
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
+    @nvtx.annotate("NeRF Forward")
     def forward(self, x):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
