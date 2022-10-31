@@ -745,7 +745,9 @@ def train():
 
             else:
                 # Random from one image
-                img_i = np.random.choice(i_train)
+                # img_i = np.random.choice(i_train)
+                # Let's use a hard-coded image ID to keep it consistent for the reporting, for now...
+                img_i = 2
                 target = images[img_i]
                 target = torch.Tensor(target).to(device)
                 pose = poses[img_i, :3,:4]
@@ -848,42 +850,37 @@ def train():
                 print(expname, i, psnr.item(), loss.item(), global_step)
                 print('iter time {:.05f}'.format(dt))
 
-                writer.add_scalar('loss', loss.item(), i)
-                writer.add_scalar('psnr/coarse train', psnr.item(), i)
+                writer.add_scalar('loss', loss.item(), global_step)
+                writer.add_scalar('psnr/coarse train', psnr.item(), global_step)
                 # writer.add_histogram('train/tran', trans.item(), i)
-                if args.N_importance > 0:
-                    writer.add_scalar('psnr/fine train', psnr0.item(), i)
+                #if args.N_importance > 0:
+                #    writer.add_scalar('psnr/fine train', psnr0.item(), global_step)
 
-                '''
-                if i%args.i_img==0:
+            if i%args.i_img==0:
+                # Log a rendered validation view to Tensorboard
+                img_i = np.random.choice(i_val)
+                target = torch.Tensor(images[img_i]).to(device)
+                pose = poses[img_i, :3, :4]
+                with torch.no_grad():
+                    rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, c2w=pose,
+                                                        **render_kwargs_test)
 
-                    # Log a rendered validation view to Tensorboard
-                    img_i=np.random.choice(i_val)
-                    target = images[img_i]
-                    pose = poses[img_i, :3,:4]
-                    with torch.no_grad():
-                        rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose,
-                                                            **render_kwargs_test)
+                psnr = mse2psnr(img2mse(rgb, target))
 
-                    psnr = mse2psnr(img2mse(rgb, target))
+                writer.add_image('rgb', rgb, global_step, dataformats='HWC')
+                writer.add_image('disp', disp[None], global_step)
+                writer.add_image('acc', acc[None], global_step)
 
-                    import pdb; pdb.set_trace()
+                writer.add_scalar('psnr_holdout', psnr.item(), global_step)
+                writer.add_image('rgb_holdout', target, global_step, dataformats='HWC')
 
-                    writer.add_image('rgb', to8b(rgb)[tf.newaxis])
-                    tf.contrib.summary.image('disp', disp[tf.newaxis,...,tf.newaxis])
-                    tf.contrib.summary.image('acc', acc[tf.newaxis,...,tf.newaxis])
+                """
+                if  args.N_importance > 0:
+                    writer.add_image('rgb0', extras['rgb0'], global_step, dataformats='HWC')
+                    writer.add_image('disp0', extras['disp0'][None], global_step)
+                    writer.add_image('z_std', extras['z_std'][None], global_step)
+                """
 
-                    writer.add_scalar('psnr_holdout', psnr.item(), i)
-                    tf.contrib.summary.image('rgb_holdout', target[tf.newaxis])
-
-
-                    if args.N_importance > 0:
-
-                        with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
-                            tf.contrib.summary.image('rgb0', to8b(extras['rgb0'])[tf.newaxis])
-                            tf.contrib.summary.image('disp0', extras['disp0'][tf.newaxis,...,tf.newaxis])
-                            tf.contrib.summary.image('z_std', extras['z_std'][tf.newaxis,...,tf.newaxis])
-                '''
             global_step += 1
 
 
