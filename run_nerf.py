@@ -745,9 +745,7 @@ def train():
 
             else:
                 # Random from one image
-                # img_i = np.random.choice(i_train)
-                # Let's use a hard-coded image ID to keep it consistent for the reporting, for now...
-                img_i = 2
+                img_i = np.random.choice(i_train)
                 target = images[img_i]
                 target = torch.Tensor(target).to(device)
                 pose = poses[img_i, :3,:4]
@@ -858,7 +856,9 @@ def train():
 
             if i%args.i_img==0:
                 # Log a rendered validation view to Tensorboard
-                img_i = np.random.choice(i_val)
+                # img_i = np.random.choice(i_val)
+                # Let's use a hard-coded image ID to keep it consistent for the reporting, for now...
+                img_i = 2
                 target = torch.Tensor(images[img_i]).to(device)
                 pose = poses[img_i, :3, :4]
                 with torch.no_grad():
