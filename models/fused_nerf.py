@@ -24,6 +24,9 @@ class FusedNeRF(nn.Module):
         self.position_input_channels = position_input_channels
         self.viewangle_input_channels = viewangle_input_channels
 
+        if color_dim not in [16, 32, 64, 128] or density_dim not in [16, 32, 64, 128]:
+            raise "FullyFusedMLP dimensionality must be one of 16, 32, 64, or 128."
+
         # Density network
         density_network_config = json.loads(f'''
         {{

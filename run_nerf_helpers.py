@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from encoders import PositionalEncoder
+from encoders import PositionalEncoder, CUDAHashEncoder
 import nvtx
 
 # Misc
@@ -11,10 +11,7 @@ img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
-def get_embedder(multires, i=0):
-    if i == -1:
-        return nn.Identity(), 3
-    
+def get_embedder(multires):
     embed_kwargs = {
                 'include_input' : True,
                 'input_dims' : 3,

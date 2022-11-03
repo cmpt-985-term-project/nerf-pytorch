@@ -17,6 +17,7 @@ from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
 from models import NeRF, FusedNeRF
+from encoders import PositionalEncoder, CUDAHashEncoder, CUDASHEncoder
 
 # Performance profiling
 import nvtx
@@ -178,12 +179,55 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
+    grad_vars = []
+
+    # Position Encoder
+    # (Note: I'm not keen on the weird lambda)
+    if args.position_encoder == 'frequency':
+        embed_kwargs = {
+                    'include_input' : True,
+                    'input_dims' : 3,
+                    'max_freq_log2' : args.multires-1,
+                    'num_freqs' : args.multires,
+                    'log_sampling' : True,
+                    'periodic_fns' : [torch.sin, torch.cos],
+        }
+        embedder_obj = PositionalEncoder(**embed_kwargs)
+        embed_fn = lambda x, eo=embedder_obj : eo.embed(x)
+        input_ch = embedder_obj.out_dim
+    else:
+        # TODO - make these configurable parameters
+        n_levels = 16
+        n_features_per_level = 2
+        embed_fn = CUDAHashEncoder(input_dim=3, n_levels=n_levels, n_features_per_level=n_features_per_level,
+                                   log2_hashmap_size=args.log2_hashmap_size, base_resolution=16,
+                                   finest_resolution=args.finest_res)
+        input_ch = n_levels * n_features_per_level
+        grad_vars += list(embed_fn.parameters())
+
+    # View Direction Encoder
     input_ch_views = 0
     embeddirs_fn = None
     if args.use_viewdirs:
-        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
+        if args.view_encoder == 'frequency':
+            embed_kwargs = {
+                        'include_input' : True,
+                        'input_dims' : 3,
+                        'max_freq_log2' : args.multires_views-1,
+                        'num_freqs' : args.multires_views,
+                        'log_sampling' : True,
+                        'periodic_fns' : [torch.sin, torch.cos],
+            }
+            embedder_obj = PositionalEncoder(**embed_kwargs)
+            embeddirs_fn = lambda x, eo=embedder_obj : eo.embed(x)
+            input_ch_views = embedder_obj.out_dim
+        else:
+            # TODO - make these configurable parameters
+            degree = 4
+            embeddirs_fn = CUDASHEncoder(input_dim=3, degree=degree)
+            input_ch_views = degree ** 2
+
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
 
@@ -191,12 +235,14 @@ def create_nerf(args):
         model = NeRF(D=args.netdepth, W=args.netwidth,
                     input_ch=input_ch, output_ch=output_ch, skips=skips,
                     input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+        if args.use_fp16:
+            model = model.half()
     elif args.network_type == 'fused_nerf':
         model = FusedNeRF(density_layers=args.netdepth, density_dim=args.netwidth, density_features=15, color_layers=3, color_dim=64,
                           position_input_channels=input_ch, viewangle_input_channels=input_ch_views)
     else:
         raise f'Unknown network type: {args.network_type}'
-    grad_vars = list(model.parameters())
+    grad_vars += list(model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
@@ -204,6 +250,8 @@ def create_nerf(args):
             model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                             input_ch=input_ch, output_ch=output_ch, skips=skips,
                             input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+            if args.use_fp16:
+                model_fine = model_fine.half()
         elif args.network_type == 'fused_nerf':
             model_fine = FusedNeRF(density_layers=args.netdepth_fine, density_dim=args.netwidth_fine, density_features=15, color_layers=3, color_dim=64,
                                    position_input_channels=input_ch, viewangle_input_channels=input_ch_views)
@@ -445,11 +493,18 @@ def config_parser():
                         help='input data directory')
 
     # performance engineering
-    parser.add_argument("--encoder", type=str, default='positional',
-                        help='type of input encoder to use')
+    parser.add_argument("--position_encoder", type=str, default='frequency',
+                        help='type of input encoder to use for position in 3-space (frequency, or hash)')
+    parser.add_argument("--view_encoder", type=str, default='frequency',
+                        help='type of encoder for viewing angle (frequency or sh)')
     parser.add_argument("--network_type", type=str, default='nerf',
                         help='type of network to use: (nerf or fused_nerf)')
-
+    parser.add_argument("--finest_res",   type=int, default=512,
+                        help='finest resolution for hashed embedding')
+    parser.add_argument("--log2_hashmap_size",   type=int, default=19,
+                        help='log2 of hashmap size')
+    parser.add_argument("--use_fp16", action='store_true',
+                        help='use FP16 precision')
     # training options
     parser.add_argument("--N_iters", type=int, default=200000,
                         help='number of training iterations')
@@ -487,8 +542,6 @@ def config_parser():
                         help='set to 0. for no jitter, 1. for jitter')
     parser.add_argument("--use_viewdirs", action='store_true', 
                         help='use full 5D input instead of 3D')
-    parser.add_argument("--i_embed", type=int, default=0, 
-                        help='set 0 for default positional encoding, -1 for none')
     parser.add_argument("--multires", type=int, default=10, 
                         help='log2 of max freq for positional encoding (3D location)')
     parser.add_argument("--multires_views", type=int, default=4, 
@@ -864,7 +917,7 @@ def train():
                 print('iter time {:.05f}'.format(dt))
 
                 writer.add_scalar('loss', loss.item(), global_step)
-                writer.add_scalar('psnr/coarse train', psnr.item(), global_step)
+                writer.add_scalar('psnr_coarse', psnr.item(), global_step)
                 # writer.add_histogram('train/tran', trans.item(), i)
                 #if args.N_importance > 0:
                 #    writer.add_scalar('psnr/fine train', psnr0.item(), global_step)
@@ -880,7 +933,7 @@ def train():
                                                         **render_kwargs_test)
 
                 psnr = mse2psnr(img2mse(rgb, target))
-                writer.add_scalar('psnr/holdout', psnr.item(), global_step)
+                writer.add_scalar('psnr_holdout', psnr.item(), global_step)
 
             if i%args.i_img==0:
                 writer.add_image('rgb', rgb, global_step, dataformats='HWC')
