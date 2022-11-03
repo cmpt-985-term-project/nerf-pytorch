@@ -192,7 +192,7 @@ def create_nerf(args):
                     input_ch=input_ch, output_ch=output_ch, skips=skips,
                     input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
     elif args.network_type == 'fused_nerf':
-        model = FusedNeRF(density_layers=2, density_dim=64, density_features=15, color_layers=3, color_dim=64,
+        model = FusedNeRF(density_layers=args.netdepth, density_dim=args.netwidth, density_features=15, color_layers=3, color_dim=64,
                           position_input_channels=input_ch, viewangle_input_channels=input_ch_views)
     else:
         raise f'Unknown network type: {args.network_type}'
@@ -205,7 +205,7 @@ def create_nerf(args):
                             input_ch=input_ch, output_ch=output_ch, skips=skips,
                             input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         elif args.network_type == 'fused_nerf':
-            model_fine = FusedNeRF(density_layers=2, density_dim=64, density_features=15, color_layers=3, color_dim=64,
+            model_fine = FusedNeRF(density_layers=args.netdepth_fine, density_dim=args.netwidth_fine, density_features=15, color_layers=3, color_dim=64,
                                    position_input_channels=input_ch, viewangle_input_channels=input_ch_views)
         else:
             raise f'Unknown network type: {args.network_type}'
