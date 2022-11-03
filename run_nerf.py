@@ -16,7 +16,7 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
-from models import NeRF
+from models import NeRF, FusedNeRF
 
 # Performance profiling
 import nvtx
@@ -186,16 +186,29 @@ def create_nerf(args):
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
-    model = NeRF(D=args.netdepth, W=args.netwidth,
-                 input_ch=input_ch, output_ch=output_ch, skips=skips,
-                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+
+    if args.network_type == 'nerf':
+        model = NeRF(D=args.netdepth, W=args.netwidth,
+                    input_ch=input_ch, output_ch=output_ch, skips=skips,
+                    input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+    elif args.network_type == 'fused_nerf':
+        model = FusedNeRF(density_layers=2, density_dim=64, density_features=15, color_layers=3, color_dim=64,
+                          position_input_channels=input_ch, viewangle_input_channels=input_ch_views)
+    else:
+        raise f'Unknown network type: {args.network_type}'
     grad_vars = list(model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
-        model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
-                          input_ch=input_ch, output_ch=output_ch, skips=skips,
-                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+        if args.network_type == 'nerf':
+            model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
+                            input_ch=input_ch, output_ch=output_ch, skips=skips,
+                            input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+        elif args.network_type == 'fused_nerf':
+            model_fine = FusedNeRF(density_layers=2, density_dim=64, density_features=15, color_layers=3, color_dim=64,
+                                   position_input_channels=input_ch, viewangle_input_channels=input_ch_views)
+        else:
+            raise f'Unknown network type: {args.network_type}'
         grad_vars += list(model_fine.parameters())
 
     network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
@@ -434,6 +447,8 @@ def config_parser():
     # performance engineering
     parser.add_argument("--encoder", type=str, default='positional',
                         help='type of input encoder to use')
+    parser.add_argument("--network_type", type=str, default='nerf',
+                        help='type of network to use: (nerf or fused_nerf)')
 
     # training options
     parser.add_argument("--N_iters", type=int, default=200000,
