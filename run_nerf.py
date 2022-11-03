@@ -869,7 +869,6 @@ def train():
                 #if args.N_importance > 0:
                 #    writer.add_scalar('psnr/fine train', psnr0.item(), global_step)
 
-            if i%args.i_img==0:
                 # Log a rendered validation view to Tensorboard
                 # img_i = np.random.choice(i_val)
                 # Let's use a hard-coded image ID to keep it consistent for the reporting, for now...
@@ -881,12 +880,12 @@ def train():
                                                         **render_kwargs_test)
 
                 psnr = mse2psnr(img2mse(rgb, target))
+                writer.add_scalar('psnr/holdout', psnr.item(), global_step)
 
+            if i%args.i_img==0:
                 writer.add_image('rgb', rgb, global_step, dataformats='HWC')
                 writer.add_image('disp', disp[None], global_step)
                 writer.add_image('acc', acc[None], global_step)
-
-                writer.add_scalar('psnr_holdout', psnr.item(), global_step)
                 writer.add_image('rgb_holdout', target, global_step, dataformats='HWC')
 
                 """
