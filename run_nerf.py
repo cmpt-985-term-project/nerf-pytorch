@@ -410,35 +410,37 @@ def render_rays(ray_batch,
       z_std: [num_rays]. Standard deviation of distances along ray for each
         sample.
     """
-    N_rays = ray_batch.shape[0]
-    rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
-    viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
-    bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
-    near, far = bounds[...,0], bounds[...,1] # [-1,1]
+    with nvtx.annotate("Coarse ray sampling"):
+        N_rays = ray_batch.shape[0]
+        rays_o, rays_d = ray_batch[:,0:3], ray_batch[:,3:6] # [N_rays, 3] each
+        viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
+        bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
+        near, far = bounds[...,0], bounds[...,1] # [-1,1]
 
-    t_vals = torch.linspace(0., 1., steps=N_samples)
-    if not lindisp:
-        z_vals = near * (1.-t_vals) + far * (t_vals)
-    else:
-        z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
+        t_vals = torch.linspace(0., 1., steps=N_samples)
+        if not lindisp:
+            z_vals = near * (1.-t_vals) + far * (t_vals)
+        else:
+            z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
 
-    z_vals = z_vals.expand([N_rays, N_samples])
+        z_vals = z_vals.expand([N_rays, N_samples])
 
     if perturb > 0.:
-        # get intervals between samples
-        mids = .5 * (z_vals[...,1:] + z_vals[...,:-1])
-        upper = torch.cat([mids, z_vals[...,-1:]], -1)
-        lower = torch.cat([z_vals[...,:1], mids], -1)
-        # stratified samples in those intervals
-        t_rand = torch.rand(z_vals.shape)
+        with nvtx.annotate("Ray sampling perturbation"):
+            # get intervals between samples
+            mids = .5 * (z_vals[...,1:] + z_vals[...,:-1])
+            upper = torch.cat([mids, z_vals[...,-1:]], -1)
+            lower = torch.cat([z_vals[...,:1], mids], -1)
+            # stratified samples in those intervals
+            t_rand = torch.rand(z_vals.shape)
 
-        # Pytest, overwrite u with numpy's fixed random numbers
-        if pytest:
-            np.random.seed(0)
-            t_rand = np.random.rand(*list(z_vals.shape))
-            t_rand = torch.Tensor(t_rand)
+            # Pytest, overwrite u with numpy's fixed random numbers
+            if pytest:
+                np.random.seed(0)
+                t_rand = np.random.rand(*list(z_vals.shape))
+                t_rand = torch.Tensor(t_rand)
 
-        z_vals = lower + (upper - lower) * t_rand
+            z_vals = lower + (upper - lower) * t_rand
 
     pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples, 3]
 
@@ -450,12 +452,13 @@ def render_rays(ray_batch,
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
-        z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
-        z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], N_importance, det=(perturb==0.), pytest=pytest)
-        z_samples = z_samples.detach()
+        with nvtx.annotate("Fine ray sampling"):
+            z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
+            z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], N_importance, det=(perturb==0.), pytest=pytest)
+            z_samples = z_samples.detach()
 
-        z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
-        pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples + N_importance, 3]
+            z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
+            pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
         with nvtx.annotate("Query fine network"):
@@ -799,48 +802,50 @@ def train():
 
             # Sample random ray batch
             if use_batching:
-                # Random over all images
-                batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
-                batch = torch.transpose(batch, 0, 1)
-                batch_rays, target_s = batch[:2], batch[2]
+                with nvtx.annotate('Random ray batch over all images'):
+                    # Random over all images
+                    batch = rays_rgb[i_batch:i_batch+N_rand] # [B, 2+1, 3*?]
+                    batch = torch.transpose(batch, 0, 1)
+                    batch_rays, target_s = batch[:2], batch[2]
 
-                i_batch += N_rand
-                if i_batch >= rays_rgb.shape[0]:
-                    print("Shuffle data after an epoch!")
-                    rand_idx = torch.randperm(rays_rgb.shape[0])
-                    rays_rgb = rays_rgb[rand_idx]
-                    i_batch = 0
+                    i_batch += N_rand
+                    if i_batch >= rays_rgb.shape[0]:
+                        print("Shuffle data after an epoch!")
+                        rand_idx = torch.randperm(rays_rgb.shape[0])
+                        rays_rgb = rays_rgb[rand_idx]
+                        i_batch = 0
 
             else:
-                # Random from one image
-                img_i = np.random.choice(i_train)
-                target = images[img_i]
-                target = torch.Tensor(target).to(device)
-                pose = poses[img_i, :3,:4]
+                with nvtx.annotate('Random ray batch over random image'):
+                    # Random from one image
+                    img_i = np.random.choice(i_train)
+                    target = images[img_i]
+                    target = torch.Tensor(target).to(device)
+                    pose = poses[img_i, :3,:4]
 
-                if N_rand is not None:
-                    rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
+                    if N_rand is not None:
+                        rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
 
-                    if i < args.precrop_iters:
-                        dH = int(H//2 * args.precrop_frac)
-                        dW = int(W//2 * args.precrop_frac)
-                        coords = torch.stack(
-                            torch.meshgrid(
-                                torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH), 
-                                torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
-                            ), -1)
-                        if i == start:
-                            print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")                
-                    else:
-                        coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
+                        if i < args.precrop_iters:
+                            dH = int(H//2 * args.precrop_frac)
+                            dW = int(W//2 * args.precrop_frac)
+                            coords = torch.stack(
+                                torch.meshgrid(
+                                    torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH), 
+                                    torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
+                                ), -1)
+                            if i == start:
+                                print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")                
+                        else:
+                            coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
 
-                    coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
-                    select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
-                    select_coords = coords[select_inds].long()  # (N_rand, 2)
-                    rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
-                    batch_rays = torch.stack([rays_o, rays_d], 0)
-                    target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                        coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
+                        select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
+                        select_coords = coords[select_inds].long()  # (N_rand, 2)
+                        rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                        rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                        batch_rays = torch.stack([rays_o, rays_d], 0)
+                        target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
             #####  Core optimization loop  #####
             rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
