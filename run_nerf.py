@@ -777,7 +777,6 @@ def train():
                                                     verbose=i < 10, retraw=True,
                                                     **render_kwargs_train)
 
-            optimizer.zero_grad()
             with nvtx.annotate("compute loss"):
                 img_loss = img2mse(rgb, target_s)
                 trans = extras['raw'][...,-1]
@@ -789,9 +788,10 @@ def train():
                     loss = loss + img_loss0
                     psnr0 = mse2psnr(img_loss0)
 
+            optimizer.zero_grad()
             with nvtx.annotate("back propagation"):
                 loss.backward()
-    
+
             with nvtx.annotate("optimizer step"):
                 optimizer.step()
 

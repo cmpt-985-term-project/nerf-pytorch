@@ -93,7 +93,7 @@ class NeRF(nn.Module):
         self.density_mlp = DensityMLP(in_channels=3, out_channels=self.W+1)
         self.color_mlp = ColorMLP()
 
-    @nvtx.annotate("Static NeRF forward")
+    @nvtx.annotate("NeRF forward")
     def forward(self, x):
         # 3 input channels, 3 view channels
         input_position, input_view = x.split([3, 3], dim=-1)
