@@ -39,20 +39,21 @@ def batchify(fn, chunk):
         return torch.cat([fn(inputs[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
     return ret
 
-
-def run_network(input_position, input_view, fn, netchunk=1024*64):
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
-    input_position_flat = torch.reshape(input_position, [-1, input_position.shape[-1]])
+    inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
+    embedded = embed_fn(inputs_flat)
 
-    input_view = input_view[:,None].expand(input_position.shape)
-    input_view_flat = torch.reshape(input_view, [-1, input_view.shape[-1]])
+    if viewdirs is not None:
+        input_dirs = viewdirs[:,None].expand(inputs.shape)
+        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
+        embedded_dirs = embeddirs_fn(input_dirs_flat)
+        embedded = torch.cat([embedded, embedded_dirs], -1)
 
-    output_flat = batchify(fn, netchunk)(torch.cat([input_position_flat, input_view_flat], dim=-1))
-    output = torch.reshape(output_flat, list(input_position.shape[:-1]) + [output_flat.shape[-1]])
-
-    return output
-
+    outputs_flat = batchify(fn, netchunk)(embedded)
+    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
+    return outputs
 
 def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM.
@@ -182,12 +183,18 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
+    embed_fn, position_channels = get_embedder(args.multires, args.i_embed)
+    view_channels = 0
+    embeddirs_fn = None
+    if args.use_viewdirs:
+        embeddirs_fn, view_channels = get_embedder(args.multires_views, args.i_embed)
+
     if args.nerf_model == 'PyTorch':
-        model = NeRF().to(device)
-        model_fine = NeRF().to(device) if args.N_importance > 0 else None
+        model = NeRF(position_channels, view_channels).to(device)
+        model_fine = NeRF(position_channels, view_channels).to(device) if args.N_importance > 0 else None
     elif args.nerf_model == 'FusedMLP':
-        model = FusedNeRF().to(device)
-        model_fine = FusedNeRF().to(device) if args.N_importance > 0 else None
+        model = FusedNeRF(position_channels, view_channels).to(device)
+        model_fine = FusedNeRF(position_channels, view_channels).to(device) if args.N_importance > 0 else None
     else:
         raise ValueError(f'Unknown NeRF model type: {args.nerf_model}')
 
@@ -197,7 +204,8 @@ def create_nerf(args):
 
     # Refactoring the embedding into the model class has made these two functions identical
     # I'll leave things the way they are, though -- maybe will clean up later.
-    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn, netchunk=args.netchunk)
+    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
+                                                                    embed_fn=embed_fn, embeddirs_fn=embeddirs_fn, netchunk=args.netchunk)
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -789,6 +797,7 @@ def train():
                     psnr0 = mse2psnr(img_loss0)
 
             optimizer.zero_grad()
+
             with nvtx.annotate("back propagation"):
                 loss.backward()
 

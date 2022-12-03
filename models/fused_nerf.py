@@ -28,71 +28,63 @@ import nvtx
 
 # A "Density" (not view-angle dependent) MLP
 class FusedDensityMLP(nn.Module):
-    def __init__(self, in_channels, out_channels, degrees=10):
+    def __init__(self, position_channels, out_channels):
         super(FusedDensityMLP, self).__init__()
 
         # Network parameters
         self.W = 128
 
-        encoding_config = json.loads(f'{{"otype":"Frequency", "n_frequencies":{degrees}}}')
-        self.position_encoder = tcnn.Encoding(n_input_dims=in_channels, encoding_config=encoding_config)
-
         network_config1 = json.loads(f'''
-            {{"otype":"FullyFusedMLP", "activation":"ReLU", "output_activation":"None", "n_neurons":{self.W},
+            {{"otype":"FullyFusedMLP", "activation":"ReLU", "output_activation":"ReLU", "n_neurons":{self.W},
               "n_hidden_layers":2, "feedback_alignment":false}}''')
-        self.model_part1 = tcnn.Network(n_input_dims=self.position_encoder.n_output_dims, n_output_dims=self.W, network_config=network_config1)
+        self.model_part1 = tcnn.Network(n_input_dims=position_channels, n_output_dims=self.W, network_config=network_config1)
 
         network_config2 = json.loads(f'''
             {{"otype":"FullyFusedMLP", "activation":"ReLU", "output_activation":"None", "n_neurons":{self.W},
               "n_hidden_layers":3, "feedback_alignment":false}}''')
-        self.model_part2 = tcnn.Network(n_input_dims=self.W + self.position_encoder.n_output_dims, n_output_dims=out_channels, network_config=network_config2)
+        self.model_part2 = tcnn.Network(n_input_dims=self.W + position_channels, n_output_dims=out_channels, network_config=network_config2)
 
     def forward(self, x):
-        encoded_position = self.position_encoder(x)
-        part1 = self.model_part1(encoded_position)
-        part2 = self.model_part2(torch.cat([encoded_position, part1], dim=-1))
+        part1 = self.model_part1(x)
+        part2 = self.model_part2(torch.cat([x, part1], dim=-1))
         return part2
+
 
 # A "Color" (view-angle dependent) MLP
 class FusedColorMLP(nn.Module):
-    def __init__(self, degrees=4):
+    def __init__(self, view_channels):
         super(FusedColorMLP, self).__init__()
         self.W = 128
-
-        # For consistency with original paper, we will use the position encoder on the viewing angle,
-        # even though a spherical harmonic encoder makes more sense.
-        encoding_config = json.loads(f'{{"otype":"Frequency", "n_frequencies":{degrees}}}')
-        self.view_encoder = tcnn.Encoding(n_input_dims=3, encoding_config=encoding_config)
 
         network_config = json.loads(f'''
             {{"otype":"FullyFusedMLP", "activation":"ReLU", "output_activation":"None", "n_neurons":{self.W},
               "n_hidden_layers":1, "feedback_alignment":false}}''')
-        self.model = tcnn.Network(n_input_dims=self.view_encoder.n_output_dims + self.W, n_output_dims=3, network_config=network_config)
+        self.model = tcnn.Network(n_input_dims=self.W + view_channels, n_output_dims=3, network_config=network_config)
 
     def forward(self, x):
-        input_view, feature_vector = x.split([3, self.W], dim=-1)
-        encoded_view = self.view_encoder(input_view)
-        return self.model(torch.cat([encoded_view, feature_vector], dim=-1))
+        return self.model(x)
 
 
 #  NeRF model
 class FusedNeRF(nn.Module):
-    def __init__(self):
+    def __init__(self, position_channels, view_channels):
         super(FusedNeRF, self).__init__()
         self.W = 128
+        self.position_channels = position_channels
+        self.view_channels = view_channels
 
         # 1-dim density and 128-dim feature vector
-        self.density_mlp = FusedDensityMLP(in_channels=3, out_channels=self.W + 1)
-        self.color_mlp = FusedColorMLP()
+        self.density_mlp = FusedDensityMLP(position_channels=position_channels, out_channels=self.W + 1)
+        self.color_mlp = FusedColorMLP(view_channels=view_channels)
 
     @nvtx.annotate("Fused Static NeRF forward")
     def forward(self, x):
-        # 3 input channels, 3 view channels
-        input_position, input_view = x.split([3, 3], dim=-1)
+        input_position, input_view = torch.split(x, [self.position_channels, self.view_channels], dim=-1)
         x = self.density_mlp(input_position)
 
-        # 1-dim blending weight, 128-dim feature vector
+        # 1-dim density, 256-dim feature vector
         density, feature_vector = x.split([1, self.W], dim=-1)
+
         rgb = self.color_mlp(torch.cat([input_view, feature_vector], dim=-1))
 
         return torch.cat([rgb, density], dim=-1)
