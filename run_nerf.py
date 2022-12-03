@@ -16,6 +16,9 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 
+from models.nerf import NeRF
+from models.fused_nerf import FusedNeRF
+
 # Performance profiling
 import nvtx
 
@@ -37,21 +40,18 @@ def batchify(fn, chunk):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
+def run_network(input_position, input_view, fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
-    inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
-    embedded = embed_fn(inputs_flat)
+    input_position_flat = torch.reshape(input_position, [-1, input_position.shape[-1]])
 
-    if viewdirs is not None:
-        input_dirs = viewdirs[:,None].expand(inputs.shape)
-        input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        embedded_dirs = embeddirs_fn(input_dirs_flat)
-        embedded = torch.cat([embedded, embedded_dirs], -1)
+    input_view = input_view[:,None].expand(input_position.shape)
+    input_view_flat = torch.reshape(input_view, [-1, input_view.shape[-1]])
 
-    outputs_flat = batchify(fn, netchunk)(embedded)
-    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
-    return outputs
+    output_flat = batchify(fn, netchunk)(torch.cat([input_position_flat, input_view_flat], dim=-1))
+    output = torch.reshape(output_flat, list(input_position.shape[:-1]) + [output_flat.shape[-1]])
+
+    return output
 
 
 def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
@@ -182,30 +182,22 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    if args.nerf_model == 'PyTorch':
+        model = NeRF().to(device)
+        model_fine = NeRF().to(device) if args.N_importance > 0 else None
+    elif args.nerf_model == 'FusedMLP':
+        model = FusedNeRF().to(device)
+        model_fine = FusedNeRF().to(device) if args.N_importance > 0 else None
+    else:
+        raise ValueError(f'Unknown NeRF model type: {args.nerf_model}')
 
-    input_ch_views = 0
-    embeddirs_fn = None
-    if args.use_viewdirs:
-        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    output_ch = 5 if args.N_importance > 0 else 4
-    skips = [4]
-    model = NeRF(D=args.netdepth, W=args.netwidth,
-                 input_ch=input_ch, output_ch=output_ch, skips=skips,
-                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
     grad_vars = list(model.parameters())
-
-    model_fine = None
-    if args.N_importance > 0:
-        model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
-                          input_ch=input_ch, output_ch=output_ch, skips=skips,
-                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+    if model_fine is not None:
         grad_vars += list(model_fine.parameters())
 
-    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
-                                                                embed_fn=embed_fn,
-                                                                embeddirs_fn=embeddirs_fn,
-                                                                netchunk=args.netchunk)
+    # Refactoring the embedding into the model class has made these two functions identical
+    # I'll leave things the way they are, though -- maybe will clean up later.
+    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn, netchunk=args.netchunk)
 
     # Create optimizer
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
@@ -439,7 +431,7 @@ def config_parser():
                         help='input data directory')
 
     # training options
-    parser.add_argument("--N_iters", type=int, default=200000,
+    parser.add_argument("--N_iter", type=int, default=200000,
                         help='number of training iterations')
     parser.add_argument("--netdepth", type=int, default=8, 
                         help='layers in network')
@@ -542,6 +534,9 @@ def config_parser():
                         help='frequency of render_poses video saving')
     parser.add_argument('--use_clearml', action='store_true',
                         help='use ClearML for experiment tracking')
+
+    parser.add_argument('--nerf_model', type=str, default='PyTorch',
+                        help='NeRF architecture. Either Pytorch, FusedMLP, or CutlassMLP')
 
     return parser
 
@@ -718,7 +713,7 @@ def train():
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
 
-    N_iters = args.N_iters
+    N_iter = args.N_iter
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -728,7 +723,7 @@ def train():
     writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     
     start = start + 1
-    for i in trange(start, N_iters):
+    for i in trange(start, N_iter):
         with nvtx.annotate(f'Training iteration {i}'):
             time0 = time.time()
 
